@@ -2193,6 +2193,8 @@ function saveAndClose(payMethod,payNote,totalPaid){
   saveOrders(orders);
   var remaining=Math.max(0,total-totalAllPaid);
   if(remaining<0.01){
+    // Snapshot order BEFORE clearing — receipt ePOS print uses this
+    _captureEposSnapshot(true);
     closeCheckout();setStatus(payMethod);order=[];expandedIdx=null;renderOrder();
   } else {
     _splitPayments.push({method:payMethod,amount:totalPaid,note:payNote});
@@ -2308,6 +2310,7 @@ function docketHtml(items,meta,payMethod,payNote,label,showPrices){
 }
 
 function showPrint(payMethod,payNote){
+  _captureEposSnapshot(false); // snapshot order now for ePOS kitchen docket
   // Must be saved before printing docket
   if(!currentOrderId){
     if(!order.length){alert("No items in order.");return;}
@@ -3605,8 +3608,23 @@ function _padLine(left, right) {
 }
 
 // Convert the current order + meta into ePOS line descriptors
+// ── Order snapshot — captured before order[] is cleared after checkout ────────
+var _eposSnapshot = null;
+
+function _captureEposSnapshot(isReceipt) {
+  _eposSnapshot = {
+    isReceipt : isReceipt,
+    orderItems: JSON.parse(JSON.stringify(order)),
+    meta      : JSON.parse(JSON.stringify(getMeta()))
+  };
+}
+
 function buildDocketLines(isKitchen) {
-  var meta   = getMeta();
+  // Use snapshot if available (receipt after checkout clears order[])
+  var snap     = _eposSnapshot || {};
+  var items    = (snap.orderItems && snap.orderItems.length) ? snap.orderItems : order;
+  var meta     = (snap.meta && Object.keys(snap.meta).length) ? snap.meta : getMeta();
+
   var now    = new Date();
   var time   = now.toLocaleTimeString("en-AU", {hour:"2-digit", minute:"2-digit"});
   var date   = now.toLocaleDateString("en-AU",  {day:"numeric", month:"short", year:"numeric"});
@@ -3644,7 +3662,7 @@ function buildDocketLines(isKitchen) {
   var COURSE_LABELS = {package:"PACKAGE",entree:"ENTREE",small:"SMALL PLATES",
                        main:"MAINS",side:"SIDES",dessert:"DESSERT",drink:"DRINKS",misc:"MISC"};
   var grouped = {};
-  order.forEach(function(item) {
+  items.forEach(function(item) {
     if (!grouped[item.course]) grouped[item.course] = [];
     grouped[item.course].push(item);
   });
@@ -3682,7 +3700,7 @@ function buildDocketLines(isKitchen) {
   // ── Totals (receipt only) ─────────────────────────────────────────────────
   if (!isKitchen) {
     var subtotal = 0;
-    order.forEach(function(o) { if (o.price !== null) subtotal += o.price * o.qty; });
+    items.forEach(function(o) { if (o.price !== null) subtotal += o.price * o.qty; });
     var surcharge = getSurchargeAmount(subtotal);
     var total     = subtotal + surcharge;
     if (surcharge > 0) {
@@ -3702,12 +3720,23 @@ function buildDocketLines(isKitchen) {
 }
 
 // Send built lines to the printer
-async function _sendToEpson(ip, lines) {
-  var xml = buildEposXml(lines);
-  var url = "http://" + ip + "/cgi-bin/epos/service.cgi?devid=local_printer&timeout=10000";
+var _lastEposPrint = 0;
 
-  // Use text/plain so Safari sends a simple request — no CORS preflight OPTIONS.
-  // The Epson TM-T82II-I processes the SOAP body regardless of Content-Type.
+async function _sendToEpson(ip, lines) {
+  // If we printed within the last 4 seconds the Epson may still be cutting/feeding.
+  // Wait until 4 s have elapsed so the printer's HTTP server is free again.
+  var elapsed = Date.now() - _lastEposPrint;
+  if (_lastEposPrint && elapsed < 4000) {
+    await new Promise(function(r){ setTimeout(r, 4000 - elapsed); });
+  }
+
+  var xml = buildEposXml(lines);
+  // timeout=3000 tells the printer to wait up to 3 s for the device to be free,
+  // then respond. Our AbortController gives 12 s total.
+  var url = "http://" + ip + "/cgi-bin/epos/service.cgi?devid=local_printer&timeout=3000";
+
+  // text/plain = simple CORS request, no OPTIONS preflight.
+  // The TM-T82II-I processes the SOAP body regardless of Content-Type header.
   var controller = new AbortController();
   var timer = setTimeout(function(){ controller.abort(); }, 12000);
 
@@ -3719,8 +3748,8 @@ async function _sendToEpson(ip, lines) {
       signal: controller.signal
     });
     clearTimeout(timer);
-    // ePOS returns 200 with a SOAP response body — treat any 200 as success.
     if (!resp.ok) throw new Error("HTTP " + resp.status);
+    _lastEposPrint = Date.now(); // record successful print time
   } catch(e) {
     clearTimeout(timer);
     throw e;
