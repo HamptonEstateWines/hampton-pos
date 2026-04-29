@@ -1,0 +1,18 @@
+{
+  "projects": {
+    "production": "hampton-estate-pos",
+    "test": "hampton-estate-pos-test"
+  },
+  "targets": {
+    "hampton-estate-pos": {
+      "hosting": {
+        "production": ["hampton-estate-pos"]
+      }
+    },
+    "hampton-estate-pos-test": {
+      "hosting": {
+        "test": ["hampton-estate-pos-test"]
+      }
+    }
+  }
+}

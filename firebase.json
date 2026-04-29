@@ -1,0 +1,48 @@
+{
+  "hosting": [
+    {
+      "target": "production",
+      "public": ".",
+      "ignore": [
+        "firebase.json",
+        ".firebaserc",
+        "CLAUDE.md",
+        ".gitignore",
+        ".git/**",
+        ".github/**",
+        ".firebase/**",
+        "node_modules/**"
+      ],
+      "headers": [
+        {
+          "source": "**",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+          ]
+        }
+      ]
+    },
+    {
+      "target": "test",
+      "public": ".",
+      "ignore": [
+        "firebase.json",
+        ".firebaserc",
+        "CLAUDE.md",
+        ".gitignore",
+        ".git/**",
+        ".github/**",
+        ".firebase/**",
+        "node_modules/**"
+      ],
+      "headers": [
+        {
+          "source": "**",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+          ]
+        }
+      ]
+    }
+  ]
+}
