@@ -3705,15 +3705,26 @@ function buildDocketLines(isKitchen) {
 async function _sendToEpson(ip, lines) {
   var xml = buildEposXml(lines);
   var url = "http://" + ip + "/cgi-bin/epos/service.cgi?devid=local_printer&timeout=10000";
-  var resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "text/xml; charset=utf-8",
-      "SOAPAction": "\"http://www.epson-pos.com/schemas/2011/03/epos-print\""
-    },
-    body: xml
-  });
-  if (!resp.ok) throw new Error("Printer returned HTTP " + resp.status);
+
+  // Use text/plain so Safari sends a simple request — no CORS preflight OPTIONS.
+  // The Epson TM-T82II-I processes the SOAP body regardless of Content-Type.
+  var controller = new AbortController();
+  var timer = setTimeout(function(){ controller.abort(); }, 12000);
+
+  try {
+    var resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: xml,
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    // ePOS returns 200 with a SOAP response body — treat any 200 as success.
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+  } catch(e) {
+    clearTimeout(timer);
+    throw e;
+  }
 }
 
 function _showToast(msg, color) {
@@ -3724,23 +3735,57 @@ function _showToast(msg, color) {
     + "border-radius:10px;font-size:14px;font-weight:600;z-index:9999;"
     + "box-shadow:0 4px 20px rgba(0,0,0,.3);white-space:nowrap;";
   document.body.appendChild(t);
-  setTimeout(function(){t.remove();}, 2800);
+  setTimeout(function(){t.remove();}, 3000);
+}
+
+function _showPrintError(btn, ip, errMsg) {
+  if (btn) { btn.textContent = "🖨 Print"; btn.disabled = false; }
+  // Show a red error bar inside the print view so it's visible on iPad
+  var existing = document.getElementById("epos-error-bar");
+  if (existing) existing.remove();
+  var bar = document.createElement("div");
+  bar.id = "epos-error-bar";
+  bar.style.cssText = "background:#A32D2D;color:#fff;padding:12px 16px;font-size:13px;"
+    + "font-weight:600;text-align:center;border-radius:8px;margin:10px 0;";
+  var isAbort = errMsg && errMsg.includes("abort");
+  bar.textContent = isAbort
+    ? "⏱ Printer not responding at " + ip + " — check IP and try again"
+    : "❌ Cannot reach printer (" + (errMsg||"network error") + ")";
+  var pacts = document.querySelector("#print-view .pacts");
+  if (pacts) pacts.parentNode.insertBefore(bar, pacts);
+  // Offer AirPrint fallback after a moment
+  setTimeout(function(){
+    if (!document.getElementById("epos-error-bar")) return;
+    var fallback = document.createElement("button");
+    fallback.textContent = "Use AirPrint instead";
+    fallback.style.cssText = "display:block;width:100%;margin-top:6px;padding:10px;"
+      + "background:#f0f0ee;border:1px solid #ccc;border-radius:8px;"
+      + "font-size:13px;font-weight:600;cursor:pointer;";
+    fallback.onclick = function(){ window.print(); };
+    if (pacts) pacts.parentNode.insertBefore(fallback, pacts);
+  }, 400);
 }
 
 // Main print entry point — called by the Print button
 async function epsonPrint() {
   var ip = getPrinterIP();
 
+  // Remove any previous error bar
+  var old = document.getElementById("epos-error-bar");
+  if (old) old.remove();
+  var oldFb = document.querySelector("#print-view button[onclick*='window.print']");
+  if (oldFb && oldFb.textContent.includes("AirPrint")) oldFb.remove();
+
   if (!ip) {
-    var go = confirm("No printer IP configured.\n\nTap OK to open Printer Settings, or Cancel to use the system print dialog (AirPrint).");
+    var go = confirm("No printer IP configured.\n\nOK = open Printer Settings\nCancel = use AirPrint");
     if (go) { openPrinterSettings(); return; }
     window.print();
     return;
   }
 
-  var sub      = document.querySelector(".ph-sub");
+  var sub       = document.querySelector(".ph-sub");
   var isReceipt = sub && sub.textContent === "Receipt";
-  var lines    = buildDocketLines(!isReceipt);
+  var lines     = buildDocketLines(!isReceipt);
 
   var btn = document.querySelector("#print-view .pact.go");
   if (btn) { btn.textContent = "Sending…"; btn.disabled = true; }
@@ -3751,9 +3796,7 @@ async function epsonPrint() {
     _showToast("🖨️  Sent to printer");
   } catch(e) {
     console.warn("ePOS print failed:", e.message);
-    if (btn) { btn.textContent = "&#128424; Print"; btn.disabled = false; }
-    var fb = confirm("Could not reach printer at " + ip + ".\n(" + e.message + ")\n\nUse system print dialog instead?");
-    if (fb) window.print();
+    _showPrintError(btn, ip, e.message);
   }
 }
 
